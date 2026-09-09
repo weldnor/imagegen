@@ -1,0 +1,24 @@
+# Environment / secrets (real values live in .env; only .env.example is tracked)
+.env
+*.env
+!.env.example
+
+# Local image storage (IMAGE_STORAGE_DIR, e.g. ./data/images)
+/data/
+
+# Compiled binaries
+/server
+/imagegen
+/dist/
+*.exe
+
+# Go test / coverage output
+*.test
+*.out
+coverage.*
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*~
+.idea/

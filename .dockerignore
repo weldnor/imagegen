@@ -1,0 +1,39 @@
+# VCS
+.git
+.gitignore
+
+# Docker / compose files are not needed inside the build context
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.*.yml
+
+# Project meta that is not embedded -- keeping it out stabilizes the COPY layer cache
+README.md
+LICENSE.upstream
+.editorconfig
+.env.example
+docs/
+openspec/
+.claude/
+
+# Node / editor tooling that never belongs in the Go build context
+node_modules
+
+# Local environment files (never bake secrets into an image)
+.env
+*.env
+
+# Local image storage (IMAGE_STORAGE_DIR default ./data/images)
+/data
+
+# Build artifacts / local output
+/server
+/dist
+/tmp
+*.out
+*.test
+coverage.*
+
+# OS cruft
+.DS_Store
