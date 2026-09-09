@@ -1,0 +1,19 @@
+# Caddy reverse proxy for the Imagen app.
+#
+# CADDY_SITE_ADDRESS decides what Caddy serves and whether it terminates TLS:
+#
+#   :80                  plain HTTP on every interface (default; local dev)
+#   imagen.example.com   public hostname -> automatic HTTPS via Let's Encrypt,
+#                        with an HTTP->HTTPS redirect
+#
+# Set it in your shell environment (or .env, which docker compose also reads)
+# before `docker compose up`. Certificates and ACME state persist in the
+# caddy_data volume.
+
+{$CADDY_SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	# Caddy adds X-Forwarded-For / -Proto / -Host; the app keys its login
+	# rate limiter off X-Forwarded-For.
+	reverse_proxy app:8080
+}

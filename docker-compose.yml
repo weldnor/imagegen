@@ -20,12 +20,30 @@ services:
       db:
         condition: service_healthy
     env_file: .env
-    ports:
-      - "8080:8080"
+    expose:
+      - "8080"
     volumes:
       - images:/data/images
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      CADDY_SITE_ADDRESS: ${CADDY_SITE_ADDRESS:-:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
     restart: unless-stopped
 
 volumes:
   pgdata:
   images:
+  caddy_data:
+  caddy_config:
