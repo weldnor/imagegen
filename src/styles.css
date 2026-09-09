@@ -43,6 +43,12 @@
     box-sizing: border-box;
 }
 
+/* The JS toggles visibility with el.hidden; keep it winning over any
+   component rule that sets display (e.g. .login-overlay { display: flex }). */
+[hidden] {
+    display: none !important;
+}
+
 html {
     font-size: 16px;
     scroll-behavior: smooth;
