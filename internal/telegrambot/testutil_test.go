@@ -2,6 +2,8 @@ package telegrambot
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -16,8 +18,11 @@ import (
 // ---- fake API ----
 
 type sentMessage struct {
-	chatID int64
-	text   string
+	chatID   int64
+	text     string
+	keyboard keyboard
+	// reply is the persistent keyboard the message installed, if any.
+	reply replyKeyboard
 }
 
 type sentPhoto struct {
@@ -25,14 +30,38 @@ type sentPhoto struct {
 	data     []byte
 	filename string
 	caption  string
+	keyboard keyboard
+}
+
+type sentDocument struct {
+	chatID   int64
+	data     []byte
+	filename string
+	caption  string
+}
+
+type editedMessage struct {
+	chatID    int64
+	messageID int
+	text      string
+	keyboard  keyboard
+}
+
+type answeredQuery struct {
+	queryID string
+	text    string
 }
 
 type fakeAPI struct {
 	mu sync.Mutex
 
-	messages []sentMessage
-	photos   []sentPhoto
-	deleted  []int64 // chat ids for which DeleteMessage was called
+	messages  []sentMessage
+	photos    []sentPhoto
+	documents []sentDocument
+	edits     []editedMessage
+	answers   []answeredQuery
+	commands  []models.BotCommand
+	deleted   []int64 // chat ids for which DeleteMessage was called
 
 	downloadFn func(fileID string) ([]byte, error)
 }
@@ -44,10 +73,52 @@ func (f *fakeAPI) SendMessage(_ context.Context, chatID int64, text string) erro
 	return nil
 }
 
-func (f *fakeAPI) SendPhoto(_ context.Context, chatID int64, data []byte, filename, caption string) error {
+func (f *fakeAPI) SendMessageWithKeyboard(_ context.Context, chatID int64, text string, kb keyboard) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.photos = append(f.photos, sentPhoto{chatID: chatID, data: data, filename: filename, caption: caption})
+	f.messages = append(f.messages, sentMessage{chatID: chatID, text: text, keyboard: kb})
+	return nil
+}
+
+func (f *fakeAPI) SendMessageWithReplyKeyboard(_ context.Context, chatID int64, text string, kb replyKeyboard) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.messages = append(f.messages, sentMessage{chatID: chatID, text: text, reply: kb})
+	return nil
+}
+
+func (f *fakeAPI) SendPhoto(_ context.Context, chatID int64, data []byte, filename, caption string, kb keyboard) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.photos = append(f.photos, sentPhoto{chatID: chatID, data: data, filename: filename, caption: caption, keyboard: kb})
+	return nil
+}
+
+func (f *fakeAPI) SendDocument(_ context.Context, chatID int64, data []byte, filename, caption string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.documents = append(f.documents, sentDocument{chatID: chatID, data: data, filename: filename, caption: caption})
+	return nil
+}
+
+func (f *fakeAPI) EditMessage(_ context.Context, chatID int64, messageID int, text string, kb keyboard) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.edits = append(f.edits, editedMessage{chatID: chatID, messageID: messageID, text: text, keyboard: kb})
+	return nil
+}
+
+func (f *fakeAPI) AnswerCallbackQuery(_ context.Context, queryID, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.answers = append(f.answers, answeredQuery{queryID: queryID, text: text})
+	return nil
+}
+
+func (f *fakeAPI) SetCommands(_ context.Context, cmds []models.BotCommand) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commands = cmds
 	return nil
 }
 
@@ -75,6 +146,26 @@ func (f *fakeAPI) lastText(chatID int64) string {
 		}
 	}
 	return last
+}
+
+func (f *fakeAPI) lastEdit(chatID int64) (editedMessage, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := len(f.edits) - 1; i >= 0; i-- {
+		if f.edits[i].chatID == chatID {
+			return f.edits[i], true
+		}
+	}
+	return editedMessage{}, false
+}
+
+func (f *fakeAPI) lastAnswer() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.answers) == 0 {
+		return ""
+	}
+	return f.answers[len(f.answers)-1].text
 }
 
 func (f *fakeAPI) allText(chatID int64) []string {
@@ -115,34 +206,54 @@ func okImage(openrouter.GenerateParams) (*openrouter.Image, error) {
 // ---- fake GalleryStore ----
 
 type fakeGallery struct {
-	mu     sync.Mutex
-	images map[string]gallery.Image // by id
-	nextID int
-	saved  []gallery.Metadata
+	mu      sync.Mutex
+	images  map[string]gallery.Image // by id
+	order   []string                 // ids, oldest first
+	baseDir string
+	nextID  int
+	saved   []gallery.Metadata
+	saveErr error // when set, every Save fails
 }
 
 func newFakeGallery() *fakeGallery {
-	return &fakeGallery{images: map[string]gallery.Image{}}
+	dir, err := os.MkdirTemp("", "imagegen-fake-gallery")
+	if err != nil {
+		panic(err)
+	}
+	return &fakeGallery{images: map[string]gallery.Image{}, baseDir: dir}
 }
 
 func (g *fakeGallery) Save(_ context.Context, userID string, data []byte, meta gallery.Metadata) (gallery.Image, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.saveErr != nil {
+		return gallery.Image{}, g.saveErr
+	}
 	g.nextID++
 	id := "img-" + strconv.Itoa(g.nextID)
-	img := gallery.Image{ID: id, UserID: userID, Created: time.Now(), Metadata: meta}
+	relPath := id + ".bin"
+	if err := os.WriteFile(filepath.Join(g.baseDir, relPath), data, 0o600); err != nil {
+		return gallery.Image{}, err
+	}
+	img := gallery.Image{ID: id, UserID: userID, FilePath: relPath, Created: time.Now(), Metadata: meta}
 	g.images[id] = img
+	g.order = append(g.order, id)
 	g.saved = append(g.saved, meta)
-	_ = data
 	return img, nil
 }
 
+// AbsPath mirrors *gallery.Store: image bytes live under a base directory.
+func (g *fakeGallery) AbsPath(img gallery.Image) string {
+	return filepath.Join(g.baseDir, img.FilePath)
+}
+
+// List returns the user's images newest first, like *gallery.Store.
 func (g *fakeGallery) List(_ context.Context, userID string) ([]gallery.Image, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	var out []gallery.Image
-	for _, img := range g.images {
-		if img.UserID == userID {
+	for i := len(g.order) - 1; i >= 0; i-- {
+		if img := g.images[g.order[i]]; img.UserID == userID {
 			out = append(out, img)
 		}
 	}
@@ -167,6 +278,7 @@ func (g *fakeGallery) Delete(_ context.Context, userID, imageID string) error {
 		return gallery.ErrNotFound
 	}
 	delete(g.images, imageID)
+	g.forget(imageID)
 	return nil
 }
 
@@ -176,9 +288,20 @@ func (g *fakeGallery) ClearForUser(_ context.Context, userID string) error {
 	for id, img := range g.images {
 		if img.UserID == userID {
 			delete(g.images, id)
+			g.forget(id)
 		}
 	}
 	return nil
+}
+
+// forget drops id from the ordering; callers hold g.mu.
+func (g *fakeGallery) forget(id string) {
+	for i, other := range g.order {
+		if other == id {
+			g.order = append(g.order[:i], g.order[i+1:]...)
+			return
+		}
+	}
 }
 
 // ---- fake UserStore ----

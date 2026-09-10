@@ -7,6 +7,7 @@ package telegrambot
 import (
 	"context"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +32,9 @@ type GalleryStore interface {
 	Get(ctx context.Context, userID, imageID string) (gallery.Image, error)
 	Delete(ctx context.Context, userID, imageID string) error
 	ClearForUser(ctx context.Context, userID string) error
+	// AbsPath locates an image's bytes on disk, so the gallery browser can
+	// send a stored image back to the chat.
+	AbsPath(gallery.Image) string
 }
 
 // UserStore is the subset of *auth.Users the bot uses for authentication and
@@ -55,6 +59,11 @@ type BindingStore interface {
 // selected generation options. Lost on restart by design (see design.md).
 type chatState struct {
 	adminUntil time.Time // zero if not admin-authorized
+
+	// homeKeyboardSent records that this chat already has the persistent
+	// keyboard, so /menu does not re-send it on every call. Lost on restart
+	// like the rest of the state, which only costs one extra message.
+	homeKeyboardSent bool
 
 	hasModel    bool
 	model       string
@@ -144,13 +153,24 @@ func newBot(api API, cfg Config, gen Generator, gal GalleryStore, users UserStor
 	}
 }
 
-// Start runs the polling loop until ctx is canceled. It is a no-op if the Bot
-// was built without a real transport (e.g. via newBot directly in a test).
+// Start publishes the command menu and runs the polling loop until ctx is
+// canceled. It is a no-op if the Bot was built without a real transport (e.g.
+// via newBot directly in a test).
 func (b *Bot) Start(ctx context.Context) {
 	if b.client == nil {
 		return
 	}
+	b.publishCommands(ctx)
 	b.client.Start(ctx)
+}
+
+// publishCommands registers the "/" menu Telegram clients show. A failure
+// (e.g. a transient network error at startup) only costs the menu, so it is
+// logged rather than fatal.
+func (b *Bot) publishCommands(ctx context.Context) {
+	if err := b.api.SetCommands(ctx, menuCommands()); err != nil {
+		log.Printf("telegrambot: publishing command menu: %v", err)
+	}
 }
 
 // handleUpdateSafely dispatches update, recovering from any panic so a bug in
@@ -164,8 +184,13 @@ func (b *Bot) handleUpdateSafely(ctx context.Context, update *models.Update) {
 	b.handleUpdate(ctx, update)
 }
 
-// handleUpdate routes one update to the matching command handler.
+// handleUpdate routes one update: a message to its command handler, a button
+// press to its callback handler.
 func (b *Bot) handleUpdate(ctx context.Context, update *models.Update) {
+	if update.CallbackQuery != nil {
+		b.handleCallback(ctx, update.CallbackQuery)
+		return
+	}
 	msg := update.Message
 	if msg == nil {
 		return
@@ -176,9 +201,33 @@ func (b *Bot) handleUpdate(ctx context.Context, update *models.Update) {
 	}
 	h, ok := commandHandlers[cmd]
 	if !ok {
+		b.cmdUnknown(ctx, msg, cmd)
 		return
 	}
 	h(b, ctx, msg, args)
+}
+
+// handleCallback dispatches one inline-button press and always answers the
+// query, so Telegram stops showing a spinner on the button.
+func (b *Bot) handleCallback(ctx context.Context, q *models.CallbackQuery) {
+	msg := q.Message.Message
+	if q.Message.Type != models.MaybeInaccessibleMessageTypeMessage || msg == nil {
+		return
+	}
+	prefix, payload, _ := strings.Cut(q.Data, ":")
+	cb := &callbackContext{
+		queryID:   q.ID,
+		chatID:    msg.Chat.ID,
+		messageID: msg.ID,
+		payload:   payload,
+		fromPhoto: len(msg.Photo) > 0,
+	}
+	h, ok := callbackHandlers[prefix]
+	if !ok {
+		cb.ack(b, ctx, "")
+		return
+	}
+	cb.ack(b, ctx, h(b, ctx, cb))
 }
 
 func (b *Bot) reply(ctx context.Context, chatID int64, text string) {

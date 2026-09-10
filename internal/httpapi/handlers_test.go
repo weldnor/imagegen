@@ -20,6 +20,13 @@ func genBody(prompt, model string, count int) string {
 	return string(b)
 }
 
+func optBody(prompt, model, size, ratio string) string {
+	b, _ := json.Marshal(generateRequest{
+		Prompt: prompt, Model: model, ImageSize: size, AspectRatio: ratio, Count: 1,
+	})
+	return string(b)
+}
+
 // ---- 7.1 validation ----
 
 func TestGenerateValidation(t *testing.T) {
@@ -36,6 +43,8 @@ func TestGenerateValidation(t *testing.T) {
 		{"count zero", genBody("cat", geminiModel, 0), http.StatusBadRequest},
 		{"count nine", genBody("cat", geminiModel, 9), http.StatusBadRequest},
 		{"malformed json", "{nope", http.StatusBadRequest},
+		{"bad image size", optBody("cat", geminiModel, "512", "1:1"), http.StatusBadRequest},
+		{"bad aspect ratio", optBody("cat", geminiModel, "1K", "16x9"), http.StatusBadRequest},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

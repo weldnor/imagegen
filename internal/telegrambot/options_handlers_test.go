@@ -112,6 +112,38 @@ func TestCmdAspectSizeCount(t *testing.T) {
 	}
 }
 
+// The upstream API rejects anything outside its option lists, so a bad
+// /aspect or /size argument is refused here rather than at generation time.
+func TestCmdAspectSizeRejectInvalidValues(t *testing.T) {
+	tb := newTestBot()
+	loggedInBot(tb, 1)
+	tb.bot.cmdModel(context.Background(), textMessage(1, ""), "google/gemini-2.5-flash-image")
+	tb.bot.cmdAspect(context.Background(), textMessage(1, ""), "16:9")
+	tb.bot.cmdSize(context.Background(), textMessage(1, ""), "2K")
+
+	tb.bot.cmdAspect(context.Background(), textMessage(1, ""), "16x9")
+	if got := tb.api.lastText(1); !strings.Contains(got, "aspect ratio must be one of") {
+		t.Errorf("reply = %q", got)
+	}
+	if got := tb.bot.activeAspect(1); got != "16:9" {
+		t.Errorf("activeAspect changed to %q after invalid input", got)
+	}
+
+	tb.bot.cmdSize(context.Background(), textMessage(1, ""), "1024")
+	if got := tb.api.lastText(1); !strings.Contains(got, "image size must be one of") {
+		t.Errorf("reply = %q", got)
+	}
+	if got := tb.bot.activeSize(1); got != "2K" {
+		t.Errorf("activeSize changed to %q after invalid input", got)
+	}
+
+	// Valid values are canonicalised, so "1k" is stored as the API's "1K".
+	tb.bot.cmdSize(context.Background(), textMessage(1, ""), "1k")
+	if got := tb.bot.activeSize(1); got != "1K" {
+		t.Errorf("activeSize = %q, want the canonical 1K", got)
+	}
+}
+
 // Covers 6.4: switching to a model that doesn't support a set option clears it.
 func TestSwitchingModelClearsUnsupportedOptions(t *testing.T) {
 	tb := newTestBot()

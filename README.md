@@ -132,6 +132,31 @@ The bot runs in the same process as the HTTP server (long polling; see
 `internal/telegrambot`) and mirrors the web UI's generation, model/option
 selection, and gallery, plus admin-only user management.
 
+**It is button-driven: nothing has to be memorized.** Send a prompt as an
+ordinary message, and use the persistent keyboard Telegram draws under the
+input field for everything else:
+
+| Button | What it opens |
+|---|---|
+| 🎨 New image | How to write a prompt, and what it will generate with. |
+| 🖼 Gallery | The listing, the one-at-a-time browser, and delete-all. |
+| ⚙️ Settings | Model, aspect ratio, image size, images per prompt, reset. |
+| ❓ Help | The command reference below. |
+
+The keyboard is installed on `/start` and on a successful `/login`, and stays
+until it is replaced. Every command below still works when typed, but only a
+short list — `/start`, `/menu`, `/help`, `/login`, `/settings`, `/gallery` —
+is published to Telegram's "/" menu: a "/" list nobody can scan is exactly
+what the buttons exist to avoid.
+
+**General**
+| Command | Description |
+|---|---|
+| `/start` | What the bot does; installs the keyboard and opens the menu. |
+| `/help` | Every command, grouped, plus the buttons and shortcuts. |
+| `/menu` | Open the inline menu (gallery, settings, help). |
+| `/settings` | Open the settings submenu. |
+
 **Authentication**
 | Command | Description |
 |---|---|
@@ -149,19 +174,35 @@ selection, and gallery, plus admin-only user management.
 **Generation and options (require authentication)**
 | Command | Description |
 |---|---|
-| `/models` | List the known model catalog (same set as `GET /api/models`). |
-| `/model <id>` | Select the active model for this chat. |
-| `/aspect <ratio>` | Set the aspect ratio, if the active model supports it. |
-| `/size <size>` | Set the image size, if the active model supports it. |
-| `/count <n>` | Set how many images to generate per request (1-8). |
 | `/generate <prompt>` | Generate with the chat's active model/options; also triggered by a plain-text message. A photo (or a reply to one) is used as a reference image when the active model supports image input, up to its reference limit. |
+| `/models` | List the known model catalog (same set as `GET /api/models`), with a picker attached. |
+| `/model [id]` | Select the active model for this chat; with no id, show the picker. |
+| `/aspect [ratio]` | Set the aspect ratio, if the active model supports it; with no ratio, offer the presets. |
+| `/size [size]` | Set the image size, if the active model supports it; with no size, offer the presets. |
+| `/count [n]` | Set how many images to generate per request (1-8); with no n, offer the buttons. |
 
 **Gallery (require authentication)**
 | Command | Description |
 |---|---|
-| `/gallery` | List this chat's images, newest first (paged). |
-| `/delete <id>` | Delete one owned image. |
-| `/clear` | Delete every image owned by this chat's user. |
+| `/gallery` | List this chat's images, newest first (paged), with Browse and Delete-all buttons. |
+| `/browse` | Page through the images one at a time, newest first. |
+| `/delete <id>` | Delete one owned image (the id is in the `/gallery` listing). |
+| `/clear` | Delete every image owned by this chat's user, without asking (the Delete-all button asks first). |
+
+**Inline menus**
+
+Inline keyboards carry the same authorization as the commands they stand for:
+every press re-checks the chat's authentication, and a press on a stale button
+(an option the newly selected model does not support, an image that is already
+deleted) is refused with an explanation rather than acted on.
+
+| Where | What it does |
+|---|---|
+| Main menu (`/menu`, `/start`, `/help`) | Three destinations — 🖼 Gallery, ⚙️ Settings, ❓ Help — and Close. Settings are one level down, so the root stays readable. |
+| ⚙️ Settings | One row per setting, each labelled with the value in force (`🎨 Model · Gemini 2.5 Flash Image`, `📐 Aspect ratio · auto`), plus ♻️ Reset to defaults. Options the active model does not support are not offered; the pickers lead back here. Aspect ratios are ordered by how often they are wanted, and both the ratio and size pickers have an `auto` button that hands the choice back to the model. |
+| 🖼 Gallery | The listing, with 🖼 Browse images, 🗑 Delete all (which asks first), and Back. An empty gallery says so and offers no destructive button. |
+| Under every generated image | **Again** regenerates from the stored request (prompt, model, options; a reference image is not stored, so a request that used one is regenerated from the prompt alone), **Original** resends the image as an uncompressed file (Telegram re-encodes anything sent as a photo), **Delete** removes the image and its message — plus a row back to the gallery and the settings. |
+| Browser | Arrows walk the list (wrapping at either end) by replacing the browser's own message, so arrow presses do not fill the chat. |
 
 Selected model/options and admin authorization are in-memory per chat and are
 lost on restart (cheap to redo); linked Telegram IDs and the `users` table

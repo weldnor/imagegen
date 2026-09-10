@@ -90,6 +90,27 @@ func TestExtractImageRefNoImage(t *testing.T) {
 	}
 }
 
+// When the model replies with text instead of an image (a refusal, or it read
+// the prompt as a question), that text must reach the error message.
+func TestExtractImageRefNoImageSurfacesText(t *testing.T) {
+	cases := map[string]string{
+		"content string": `{"choices":[{"message":{"content":"I can't create that image."}}]}`,
+		"refusal field":  `{"choices":[{"message":{"content":null,"refusal":"I can't create that image."}}]}`,
+		"content parts":  `{"choices":[{"message":{"content":[{"type":"text","text":"I can't create that image."}]}}]}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := extractImageRef(parseResp(t, body))
+			if !errors.Is(err, errNoImage) {
+				t.Fatalf("err = %v, want errNoImage", err)
+			}
+			if !strings.Contains(err.Error(), "I can't create that image.") {
+				t.Errorf("model text not surfaced: %q", err.Error())
+			}
+		})
+	}
+}
+
 func TestResolveImageDataURI(t *testing.T) {
 	data, ct, err := resolveImage(context.Background(), "data:image/gif;base64,R0lGOA==", http.DefaultClient)
 	if err != nil {

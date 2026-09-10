@@ -20,7 +20,8 @@ var errNoImage = errors.New("no image in OpenRouter response")
 type chatResponse struct {
 	Choices []struct {
 		Message struct {
-			Content any `json:"content"` // string or []part
+			Content any    `json:"content"` // string or []part
+			Refusal string `json:"refusal"`
 			Images  []struct {
 				ImageURL *struct {
 					URL string `json:"url"`
@@ -94,7 +95,56 @@ func extractImageRef(r *chatResponse) (string, error) {
 		return s, nil
 	}
 
+	// No image: the model answered with text instead — a content-policy
+	// refusal, or it read the prompt as a question. Surface that text so the
+	// caller learns why nothing was generated instead of a bare "no image".
+	if text := firstNonEmpty(msg.Refusal, contentText(msg.Content)); text != "" {
+		return "", fmt.Errorf("%w: %s", errNoImage, truncate(text, 400))
+	}
 	return "", errNoImage
+}
+
+// contentText pulls the plain text out of an OpenRouter message content, which
+// is either a string or an array of parts.
+func contentText(content any) string {
+	switch c := content.(type) {
+	case string:
+		return strings.TrimSpace(c)
+	case []any:
+		var b strings.Builder
+		for _, p := range c {
+			m, ok := p.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t, ok := m["text"].(string); ok && t != "" {
+				if b.Len() > 0 {
+					b.WriteByte(' ')
+				}
+				b.WriteString(t)
+			}
+		}
+		return strings.TrimSpace(b.String())
+	}
+	return ""
+}
+
+func firstNonEmpty(vs ...string) string {
+	for _, v := range vs {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// truncate shortens s to at most n runes, appending an ellipsis when it cuts.
+func truncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return strings.TrimSpace(string(r[:n])) + "…"
 }
 
 var dataURIRe = regexp.MustCompile(`^data:([^;,]+)?(;base64)?,(.*)$`)

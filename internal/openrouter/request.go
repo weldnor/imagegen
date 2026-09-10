@@ -25,8 +25,8 @@ type imageURL struct {
 }
 
 type imageConfig struct {
-	ImageSize   string `json:"image_size"`
-	AspectRatio string `json:"aspect_ratio"`
+	ImageSize   string `json:"image_size,omitempty"`
+	AspectRatio string `json:"aspect_ratio,omitempty"`
 }
 
 type chatMessage struct {
@@ -59,6 +59,10 @@ func isGemini(model string) bool {
 //   - Gemini models that support image size get an image_config (size + aspect
 //     ratio); non-Gemini models that support aspect ratio get a top-level
 //     aspect_ratio.
+//
+// Sizes and ratios are normalised to the tokens the API accepts, and options
+// left unset are omitted entirely — the API rejects an empty string as an
+// invalid option rather than treating it as "unset".
 func buildRequest(p GenerateParams, cfg ModelConfig) chatRequest {
 	var parts []contentPart
 	if cfg.SupportsImageInput {
@@ -86,14 +90,20 @@ func buildRequest(p GenerateParams, cfg ModelConfig) chatRequest {
 		Messages: []chatMessage{{Role: "user", Content: content}},
 	}
 
+	size, _ := NormalizeImageSize(p.ImageSize)
+	ratio, _ := NormalizeAspectRatio(p.AspectRatio)
+
 	if cfg.SupportsImageSize && isGemini(p.Model) {
-		req.ImageConfig = &imageConfig{
-			ImageSize:   strings.ToLower(p.ImageSize),
-			AspectRatio: p.AspectRatio,
+		if size != "" || (cfg.SupportsAspectRatio && ratio != "") {
+			ic := imageConfig{ImageSize: size}
+			if cfg.SupportsAspectRatio {
+				ic.AspectRatio = ratio
+			}
+			req.ImageConfig = &ic
 		}
 	}
 	if cfg.SupportsAspectRatio && !isGemini(p.Model) {
-		req.AspectRatio = p.AspectRatio
+		req.AspectRatio = ratio
 	}
 
 	return req

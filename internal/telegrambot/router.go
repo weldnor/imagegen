@@ -7,10 +7,28 @@ import (
 	"github.com/go-telegram/bot/models"
 )
 
+// The labels of the persistent keyboard (see homeKeyboard). A tap on one of
+// these sends its label as an ordinary text message, so route maps the labels
+// back to commands before anything else can treat them as a prompt.
+const (
+	btnGenerate = "🎨 New image"
+	btnGallery  = "🖼 Gallery"
+	btnSettings = "⚙️ Settings"
+	btnHelp     = "❓ Help"
+)
+
+var replyButtonCommands = map[string]string{
+	btnGenerate: "new",
+	btnGallery:  "gallery",
+	btnSettings: "settings",
+	btnHelp:     "help",
+}
+
 // route extracts the command to dispatch and its argument text from an
 // incoming message. It recognizes "/command args", "/command@BotName args",
-// a plain-text message ("text"), and a message carrying a photo ("photo").
-// It returns cmd == "" for a message that should be ignored.
+// a tap on the persistent keyboard, a plain-text message ("text"), and a
+// message carrying a photo ("photo"). It returns cmd == "" for a message that
+// should be ignored.
 func route(msg *models.Message) (cmd, args string) {
 	text := msg.Text
 	if text == "" {
@@ -31,8 +49,11 @@ func route(msg *models.Message) (cmd, args string) {
 	if len(msg.Photo) > 0 {
 		return "photo", strings.TrimSpace(msg.Caption)
 	}
-	if strings.TrimSpace(msg.Text) != "" {
-		return "text", strings.TrimSpace(msg.Text)
+	if trimmed := strings.TrimSpace(msg.Text); trimmed != "" {
+		if cmd, ok := replyButtonCommands[trimmed]; ok {
+			return cmd, ""
+		}
+		return "text", trimmed
 	}
 	return "", ""
 }
@@ -42,6 +63,11 @@ type commandHandler func(b *Bot, ctx context.Context, msg *models.Message, args 
 
 // commandHandlers maps every command name route can produce to its handler.
 var commandHandlers = map[string]commandHandler{
+	"start":         (*Bot).cmdStart,
+	"help":          (*Bot).cmdHelp,
+	"menu":          (*Bot).cmdMenu,
+	"settings":      (*Bot).cmdSettings,
+	"new":           (*Bot).cmdNewImage,
 	"admin":         (*Bot).cmdAdmin,
 	"adduser":       (*Bot).cmdAddUser,
 	"addtelegramid": (*Bot).cmdAddTelegramID,
@@ -55,6 +81,7 @@ var commandHandlers = map[string]commandHandler{
 	"count":         (*Bot).cmdCount,
 	"generate":      (*Bot).cmdGenerate,
 	"gallery":       (*Bot).cmdGallery,
+	"browse":        (*Bot).cmdBrowse,
 	"delete":        (*Bot).cmdDelete,
 	"clear":         (*Bot).cmdClear,
 	"text":          (*Bot).cmdText,

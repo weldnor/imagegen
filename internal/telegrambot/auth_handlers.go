@@ -31,7 +31,7 @@ func (b *Bot) authenticate(ctx context.Context, chatID int64) (authContext, bool
 func (b *Bot) requireAuth(ctx context.Context, chatID int64) (authContext, bool) {
 	a, ok := b.authenticate(ctx, chatID)
 	if !ok {
-		b.reply(ctx, chatID, "please /login <username> <password> first")
+		b.reply(ctx, chatID, loginPrompt)
 	}
 	return a, ok
 }
@@ -73,7 +73,10 @@ func (b *Bot) cmdLogin(ctx context.Context, msg *models.Message, args string) {
 		b.reply(ctx, chatID, "login failed; please try again")
 		return
 	}
-	b.reply(ctx, chatID, "logged in as "+username)
+	// A fresh login is the first moment the buttons are usable, so it is also
+	// where the persistent keyboard goes up.
+	b.sendHome(ctx, chatID, "logged in as "+username+"\n\n"+welcome)
+	b.replyWithKeyboard(ctx, chatID, homeScreen(b.settings(chatID)), mainMenuKeyboard())
 }
 
 func (b *Bot) cmdLogout(ctx context.Context, msg *models.Message, _ string) {
@@ -85,14 +88,6 @@ func (b *Bot) cmdLogout(ctx context.Context, msg *models.Message, _ string) {
 	}
 
 	_ = b.bindings.Delete(ctx, chatID)
-	b.mu.Lock()
-	if s, ok := b.chats[chatID]; ok {
-		s.hasModel = false
-		s.model = ""
-		s.aspectRatio = ""
-		s.imageSize = ""
-		s.count = 0
-	}
-	b.mu.Unlock()
+	b.resetSettings(chatID)
 	b.reply(ctx, chatID, "logged out")
 }

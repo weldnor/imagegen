@@ -126,14 +126,24 @@ func (a *API) Generate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "count must be between 1 and 8")
 		return
 	}
+	size, ok := openrouter.NormalizeImageSize(req.ImageSize)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "image size must be one of: "+strings.Join(openrouter.ImageSizes, ", "))
+		return
+	}
+	ratio, ok := openrouter.NormalizeAspectRatio(req.AspectRatio)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "aspect ratio must be one of: "+strings.Join(openrouter.AspectRatios, ", "))
+		return
+	}
 
 	sess, _ := auth.SessionFromContext(r.Context())
 
 	params := openrouter.GenerateParams{
 		Prompt:      req.Prompt,
 		Model:       req.Model,
-		ImageSize:   req.ImageSize,
-		AspectRatio: req.AspectRatio,
+		ImageSize:   size,
+		AspectRatio: ratio,
 		References:  req.References,
 	}
 
@@ -185,8 +195,8 @@ func (a *API) Generate(w http.ResponseWriter, r *http.Request) {
 			Prompt:         req.Prompt,
 			Model:          req.Model,
 			ModelName:      modelCfg.Name,
-			ImageSize:      req.ImageSize,
-			AspectRatio:    req.AspectRatio,
+			ImageSize:      size,
+			AspectRatio:    ratio,
 			ReferenceCount: refCount,
 			ContentType:    o.img.ContentType,
 		})

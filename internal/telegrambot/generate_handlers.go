@@ -81,21 +81,15 @@ func (b *Bot) generateAndReply(ctx context.Context, msg *models.Message, prompt 
 
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
-		b.reply(ctx, chatID, "please provide a prompt, e.g. /generate a cat riding a bike")
+		b.reply(ctx, chatID, generateHint)
 		return
 	}
 
-	modelID := b.activeModel(chatID)
-	cfg, known := openrouter.Model(modelID)
-	if !known {
-		// The active model became unknown (should not normally happen); fall
-		// back to the fixed default.
-		modelID = DefaultModel
-		cfg, _ = openrouter.Model(modelID)
-	}
-	aspect := b.activeAspect(chatID)
-	size := b.activeSize(chatID)
-	count := b.activeCount(chatID)
+	// One snapshot: every image of this request uses the same options, even
+	// if a button changes them while it runs.
+	set := b.settings(chatID)
+	modelID, cfg := set.modelID, set.cfg
+	aspect, size, count := set.aspect, set.size, set.count
 
 	var references []string
 	refCount := 0
@@ -148,6 +142,15 @@ func (b *Bot) generateAndReply(ctx context.Context, msg *models.Message, prompt 
 	}
 	wg.Wait()
 
+	meta := gallery.Metadata{
+		Prompt:         prompt,
+		Model:          modelID,
+		ModelName:      cfg.Name,
+		ImageSize:      size,
+		AspectRatio:    aspect,
+		ReferenceCount: refCount,
+	}
+
 	sent, failed := 0, 0
 	var firstErr string
 	for _, o := range outcomes {
@@ -158,25 +161,11 @@ func (b *Bot) generateAndReply(ctx context.Context, msg *models.Message, prompt 
 			}
 			continue
 		}
-		saved, err := b.gallery.Save(ctx, authCtx.userID, o.img.Data, gallery.Metadata{
-			Prompt:         prompt,
-			Model:          modelID,
-			ModelName:      cfg.Name,
-			ImageSize:      size,
-			AspectRatio:    aspect,
-			ReferenceCount: refCount,
-			ContentType:    o.img.ContentType,
-		})
-		if err != nil {
+		if err := b.persistAndSend(ctx, chatID, authCtx.userID, o.img, meta, ""); err != nil {
 			failed++
 			if firstErr == "" {
-				firstErr = "failed to store a generated image"
+				firstErr = err.Error()
 			}
-			continue
-		}
-		filename := saved.ID + "." + openrouter.ExtensionForContentType(saved.ContentType)
-		if err := b.api.SendPhoto(ctx, chatID, o.img.Data, filename, ""); err != nil {
-			log.Printf("telegrambot: sending photo to chat %d: %v", chatID, err)
 			continue
 		}
 		sent++
@@ -191,5 +180,58 @@ func (b *Bot) generateAndReply(ctx context.Context, msg *models.Message, prompt 
 	}
 	if failed > 0 {
 		b.reply(ctx, chatID, fmt.Sprintf("%d of %d images failed: %s", failed, count, firstErr))
+	}
+}
+
+// errStore is reported when a generated image could not be stored; the bytes
+// are not sent in that case, so the buttons under a photo always refer to an
+// image the gallery still knows about.
+var errStore = errors.New("failed to store a generated image")
+
+// persistAndSend stores one generated image and sends it to the chat with its
+// action buttons. It returns an error whose message is user-facing.
+func (b *Bot) persistAndSend(ctx context.Context, chatID int64, userID string, img *openrouter.Image, meta gallery.Metadata, caption string) error {
+	meta.ContentType = img.ContentType
+	saved, err := b.gallery.Save(ctx, userID, img.Data, meta)
+	if err != nil {
+		log.Printf("telegrambot: storing image for chat %d: %v", chatID, err)
+		return errStore
+	}
+	filename := saved.ID + "." + openrouter.ExtensionForContentType(saved.ContentType)
+	if err := b.api.SendPhoto(ctx, chatID, img.Data, filename, caption, generatedImageKeyboard(saved.ID)); err != nil {
+		log.Printf("telegrambot: sending photo to chat %d: %v", chatID, err)
+		return errors.New("could not send a generated image")
+	}
+	// Telegram re-encodes the "photo"; follow it with the uncompressed bytes as
+	// a file so the chat always has the original. A failure here is not worth
+	// surfacing: the photo already went through.
+	if err := b.api.SendDocument(ctx, chatID, img.Data, filename, ""); err != nil {
+		log.Printf("telegrambot: sending original of %s to chat %d: %v", saved.ID, chatID, err)
+	}
+	return nil
+}
+
+// regenerate runs a stored image's request again, once. Reference images are
+// not kept, so a request that used one is regenerated from its prompt alone
+// and says so.
+func (b *Bot) regenerate(ctx context.Context, chatID int64, authCtx authContext, src gallery.Image) {
+	img, err := b.gen.Generate(ctx, openrouter.GenerateParams{
+		Prompt:      src.Prompt,
+		Model:       src.Model,
+		ImageSize:   src.ImageSize,
+		AspectRatio: src.AspectRatio,
+	})
+	if err != nil {
+		b.reply(ctx, chatID, "generation failed: "+upstreamMessage(err))
+		return
+	}
+	caption := ""
+	if src.ReferenceCount > 0 {
+		caption = "generated from the prompt alone (the reference image is not stored)"
+	}
+	meta := src.Metadata
+	meta.ReferenceCount = 0
+	if err := b.persistAndSend(ctx, chatID, authCtx.userID, img, meta, caption); err != nil {
+		b.reply(ctx, chatID, "generation failed: "+err.Error())
 	}
 }

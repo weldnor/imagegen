@@ -1,6 +1,7 @@
 package telegrambot
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -45,6 +46,12 @@ func TestGenerateSendsAndPersists(t *testing.T) {
 
 	if len(tb.api.photos) != 1 {
 		t.Fatalf("sent %d photos, want 1", len(tb.api.photos))
+	}
+	if len(tb.api.documents) != 1 {
+		t.Fatalf("sent %d documents, want 1 (original follows the photo)", len(tb.api.documents))
+	}
+	if !bytes.Equal(tb.api.documents[0].data, tb.api.photos[0].data) {
+		t.Errorf("original document bytes differ from the photo bytes")
 	}
 	if len(tb.gallery.saved) != 1 {
 		t.Fatalf("saved %d gallery entries, want 1", len(tb.gallery.saved))
@@ -136,7 +143,7 @@ func TestGenerateEmptyPromptRejected(t *testing.T) {
 	if len(tb.gen.calls) != 0 {
 		t.Fatalf("Generate called %d times, want 0", len(tb.gen.calls))
 	}
-	if got := tb.api.lastText(1); !strings.Contains(got, "provide a prompt") {
+	if got := tb.api.lastText(1); !strings.Contains(got, "Send me a prompt") {
 		t.Errorf("reply = %q", got)
 	}
 }
@@ -147,5 +154,77 @@ func TestUpstreamMessage(t *testing.T) {
 	}
 	if got := upstreamMessage(errors.New("other")); got != "image generation failed" {
 		t.Errorf("upstreamMessage(other) = %q", got)
+	}
+}
+
+// Every generated image carries its own action buttons, and the ids they
+// carry are the ones the gallery stored.
+func TestGeneratedImagesCarryActionButtons(t *testing.T) {
+	tb := newTestBot()
+	loggedInBot(tb, 1)
+	usr, _ := tb.bot.authenticate(context.Background(), 1)
+
+	tb.bot.cmdGenerate(context.Background(), textMessage(1, ""), "a cat")
+
+	if len(tb.api.photos) != 1 {
+		t.Fatalf("sent %d photos, want 1", len(tb.api.photos))
+	}
+	imgs, _ := tb.gallery.List(context.Background(), usr.userID)
+	if len(imgs) != 1 {
+		t.Fatalf("stored %d images, want 1", len(imgs))
+	}
+	kb := tb.api.photos[0].keyboard
+	if !hasButton(kb, "🔄 Again") || !hasButton(kb, "🗑 Delete") {
+		t.Fatalf("photo buttons = %+v", kb)
+	}
+	if !hasButton(kb, "☰ Menu") {
+		t.Errorf("photo has no menu button: %+v", kb)
+	}
+	// Every per-image button acts on this image; the menu button is the only
+	// one that does not, and it opens the menu as a fresh message.
+	for _, row := range kb.InlineKeyboard {
+		for _, btn := range row {
+			if btn.CallbackData == cbMenuMain {
+				continue
+			}
+			if !strings.HasSuffix(btn.CallbackData, imgs[0].ID) {
+				t.Errorf("button %q targets %q, want the stored image %q", btn.Text, btn.CallbackData, imgs[0].ID)
+			}
+		}
+	}
+}
+
+// The ☰ Menu button under a generated image opens the root menu as a fresh
+// message, since Telegram will not let a captionless photo be edited in place.
+func TestGeneratedImageMenuButtonOpensMenu(t *testing.T) {
+	tb := newTestBot()
+	loggedInBot(tb, 1)
+
+	tb.bot.cmdGenerate(context.Background(), textMessage(1, ""), "a cat")
+	tb.pressOnPhoto(t, 1, cbMenuMain)
+
+	last := tb.api.messages[len(tb.api.messages)-1]
+	if !hasButton(last.keyboard, "⚙️ Settings") {
+		t.Errorf("the menu button did not open the root menu: %+v", last.keyboard)
+	}
+	if _, ok := tb.api.lastEdit(1); ok {
+		t.Error("the menu button tried to edit the photo message")
+	}
+}
+
+// A failure to store an image is reported and never leaves a photo whose
+// buttons point at nothing.
+func TestGenerateReportsStoreFailure(t *testing.T) {
+	tb := newTestBot()
+	loggedInBot(tb, 1)
+	tb.gallery.saveErr = errors.New("disk on fire")
+
+	tb.bot.cmdGenerate(context.Background(), textMessage(1, ""), "a cat")
+
+	if len(tb.api.photos) != 0 {
+		t.Errorf("sent %d photos despite the store failing", len(tb.api.photos))
+	}
+	if got := tb.api.lastText(1); !strings.Contains(got, "failed to store") {
+		t.Errorf("reply = %q", got)
 	}
 }
