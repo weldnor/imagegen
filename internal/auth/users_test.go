@@ -2,103 +2,147 @@ package auth
 
 import (
 	"context"
-	"strings"
+	"errors"
 	"testing"
 
-	"github.com/weldnor/imagegen/internal/config"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/weldnor/imagegen/internal/db"
 	"github.com/weldnor/imagegen/internal/dbtest"
 	"github.com/weldnor/imagegen/migrations"
 )
 
-// Known password/hash pairs used across the auth tests.
+// Known passwords used across the auth tests.
 const (
-	aliceHash = "$2a$10$OC8R4yTGCzRvlH3ru9mkIeqKQm5tgfye83af3fzimrUQWBB3lwVgu" // "alice-password"
 	alicePass = "alice-password"
-	bobHash   = "$2a$10$JNBSnHo36Fu.rursUdwiGueD2PGsHFEm6SbPinrRgpxJPin24y.Rq" // "bob-password"
 	bobPass   = "bob-password"
 )
 
-func TestNewUsers(t *testing.T) {
-	cases := []struct {
-		name    string
-		creds   []config.UserCred
-		wantErr string
-	}{
-		{"valid single", []config.UserCred{{Username: "alice", Hash: aliceHash}}, ""},
-		{"valid multiple", []config.UserCred{{Username: "alice", Hash: aliceHash}, {Username: "bob", Hash: bobHash}}, ""},
-		{"empty list", nil, "no users"},
-		{"empty username", []config.UserCred{{Username: "  ", Hash: aliceHash}}, "empty username"},
-		{"empty hash", []config.UserCred{{Username: "alice", Hash: ""}}, "empty password hash"},
-		{"non-bcrypt hash", []config.UserCred{{Username: "alice", Hash: "not-a-hash"}}, "not a bcrypt hash"},
-		{"duplicate username", []config.UserCred{{Username: "alice", Hash: aliceHash}, {Username: "alice", Hash: bobHash}}, "more than once"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := NewUsers(tc.creds)
-			if tc.wantErr == "" {
-				if err != nil {
-					t.Fatalf("unexpected error: %v", err)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("error = %v, want it to contain %q", err, tc.wantErr)
-			}
-		})
-	}
-}
-
-func TestVerify(t *testing.T) {
-	u, err := NewUsers([]config.UserCred{{Username: "alice", Hash: aliceHash}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	u.byName["alice"].UserID = "uid-1"
-
-	if id, ok := u.Verify("alice", alicePass); !ok || id != "uid-1" {
-		t.Errorf("correct password: got (%q, %v), want (uid-1, true)", id, ok)
-	}
-	if _, ok := u.Verify("alice", "wrong"); ok {
-		t.Error("wrong password accepted")
-	}
-	if _, ok := u.Verify("nobody", alicePass); ok {
-		t.Error("unknown user accepted")
-	}
-}
-
-func TestSyncToDBUpsertsWithoutDuplicates(t *testing.T) {
+// newTestUsers returns a migrated pool and a Users store over it.
+func newTestUsers(t *testing.T) (*Users, *pgxpool.Pool) {
+	t.Helper()
 	pool := dbtest.Pool(t)
 	ctx := context.Background()
 	if err := db.Migrate(ctx, pool, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
+	return NewUsers(pool), pool
+}
 
-	u, err := NewUsers([]config.UserCred{{Username: "alice", Hash: aliceHash}, {Username: "bob", Hash: bobHash}})
+func TestVerifyPassword(t *testing.T) {
+	u, _ := newTestUsers(t)
+	ctx := context.Background()
+
+	id, err := u.CreateUser(ctx, "alice", alicePass, nil)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	if got, ok, err := u.VerifyPassword(ctx, "alice", alicePass); err != nil || !ok || got != id {
+		t.Errorf("correct password: got (%q, %v, %v), want (%q, true, nil)", got, ok, err, id)
+	}
+	if _, ok, err := u.VerifyPassword(ctx, "alice", "wrong"); err != nil || ok {
+		t.Error("wrong password accepted")
+	}
+	if _, ok, err := u.VerifyPassword(ctx, "nobody", alicePass); err != nil || ok {
+		t.Error("unknown user accepted")
+	}
+}
+
+func TestLookupByTelegramID(t *testing.T) {
+	u, _ := newTestUsers(t)
+	ctx := context.Background()
+
+	id, err := u.CreateUser(ctx, "alice", alicePass, []int64{111})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	gotID, gotName, ok, err := u.LookupByTelegramID(ctx, 111)
+	if err != nil || !ok || gotID != id || gotName != "alice" {
+		t.Errorf("LookupByTelegramID(111) = (%q, %q, %v, %v)", gotID, gotName, ok, err)
+	}
+	if _, _, ok, err := u.LookupByTelegramID(ctx, 999); err != nil || ok {
+		t.Errorf("LookupByTelegramID(999) should not be found: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestCreateUserRejectsDuplicateUsername(t *testing.T) {
+	u, _ := newTestUsers(t)
+	ctx := context.Background()
+
+	if _, err := u.CreateUser(ctx, "alice", alicePass, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.CreateUser(ctx, "alice", bobPass, nil); !errors.Is(err, ErrUsernameTaken) {
+		t.Fatalf("err = %v, want ErrUsernameTaken", err)
+	}
+}
+
+func TestCreateUserRejectsLinkedTelegramID(t *testing.T) {
+	u, _ := newTestUsers(t)
+	ctx := context.Background()
+
+	if _, err := u.CreateUser(ctx, "alice", alicePass, []int64{111}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.CreateUser(ctx, "bob", bobPass, []int64{111}); !errors.Is(err, ErrTelegramIDLinked) {
+		t.Fatalf("err = %v, want ErrTelegramIDLinked", err)
+	}
+	// Nothing was created for "bob".
+	if _, _, ok, err := u.LookupByTelegramID(ctx, 111); err != nil || !ok {
+		t.Fatal("expected the original link to still point at alice")
+	}
+	if _, ok, err := u.VerifyPassword(ctx, "bob", bobPass); err != nil || ok {
+		t.Error("bob should not have been created")
+	}
+}
+
+func TestAddTelegramID(t *testing.T) {
+	u, _ := newTestUsers(t)
+	ctx := context.Background()
+
+	if _, err := u.CreateUser(ctx, "alice", alicePass, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := u.AddTelegramID(ctx, "alice", 222); err != nil {
+		t.Fatalf("AddTelegramID: %v", err)
+	}
+	if _, _, ok, _ := u.LookupByTelegramID(ctx, 222); !ok {
+		t.Fatal("telegram id not linked")
+	}
+
+	if err := u.AddTelegramID(ctx, "nobody", 333); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("err = %v, want ErrUserNotFound", err)
+	}
+	if err := u.AddTelegramID(ctx, "alice", 222); !errors.Is(err, ErrTelegramIDLinked) {
+		t.Fatalf("err = %v, want ErrTelegramIDLinked", err)
+	}
+}
+
+func TestListUsers(t *testing.T) {
+	u, _ := newTestUsers(t)
+	ctx := context.Background()
+
+	if _, err := u.CreateUser(ctx, "alice", alicePass, []int64{1, 2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.CreateUser(ctx, "bob", bobPass, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := u.ListUsers(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	if err := u.SyncToDB(ctx, pool); err != nil {
-		t.Fatalf("first SyncToDB: %v", err)
+	if len(got) != 2 {
+		t.Fatalf("ListUsers returned %d users, want 2", len(got))
 	}
-	firstAlice := u.byName["alice"].UserID
-	if firstAlice == "" || u.byName["bob"].UserID == "" {
-		t.Fatal("SyncToDB did not populate UserID")
+	if got[0].Username != "alice" || len(got[0].TelegramIDs) != 2 {
+		t.Errorf("alice summary = %+v", got[0])
 	}
-
-	if err := u.SyncToDB(ctx, pool); err != nil {
-		t.Fatalf("second SyncToDB: %v", err)
-	}
-	if u.byName["alice"].UserID != firstAlice {
-		t.Errorf("alice's id changed on re-sync: %q -> %q", firstAlice, u.byName["alice"].UserID)
-	}
-
-	var n int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM users`).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	if n != 2 {
-		t.Errorf("users row count = %d, want 2", n)
+	if got[1].Username != "bob" || len(got[1].TelegramIDs) != 0 {
+		t.Errorf("bob summary = %+v", got[1])
 	}
 }

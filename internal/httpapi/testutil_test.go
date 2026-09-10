@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/weldnor/imagegen/internal/auth"
-	"github.com/weldnor/imagegen/internal/config"
 	"github.com/weldnor/imagegen/internal/db"
 	"github.com/weldnor/imagegen/internal/dbtest"
 	"github.com/weldnor/imagegen/internal/gallery"
@@ -21,11 +20,9 @@ import (
 	"github.com/weldnor/imagegen/migrations"
 )
 
-// alice/bob credentials (hashes match the passwords).
+// alice/bob credentials.
 const (
-	aliceHash = "$2a$10$OC8R4yTGCzRvlH3ru9mkIeqKQm5tgfye83af3fzimrUQWBB3lwVgu"
 	alicePass = "alice-password"
-	bobHash   = "$2a$10$JNBSnHo36Fu.rursUdwiGueD2PGsHFEm6SbPinrRgpxJPin24y.Rq"
 	bobPass   = "bob-password"
 	cookieNm  = "imagen_session"
 )
@@ -43,14 +40,11 @@ func newAuthServiceAndPool(t *testing.T) (*auth.Service, *pgxpool.Pool) {
 	if err := db.Migrate(ctx, pool, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	users, err := auth.NewUsers([]config.UserCred{
-		{Username: "alice", Hash: aliceHash},
-		{Username: "bob", Hash: bobHash},
-	})
-	if err != nil {
+	users := auth.NewUsers(pool)
+	if _, err := users.CreateUser(ctx, "alice", alicePass, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := users.SyncToDB(ctx, pool); err != nil {
+	if _, err := users.CreateUser(ctx, "bob", bobPass, nil); err != nil {
 		t.Fatal(err)
 	}
 	svc := auth.NewService(users, auth.NewSessionStore(pool, time.Hour), auth.Options{

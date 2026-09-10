@@ -48,7 +48,8 @@ func TestServerSmoke(t *testing.T) {
 	cmd := exec.Command(bin)
 	cmd.Env = append(os.Environ(),
 		"OPENROUTER_API_KEY=sk-or-smoke",
-		"AUTH_USERS=alice:$2a$10$OC8R4yTGCzRvlH3ru9mkIeqKQm5tgfye83af3fzimrUQWBB3lwVgu",
+		"TELEGRAM_BOT_TOKEN=123456:smoke-test-token",
+		"ADMIN_PASSWORD=smoke-admin-password",
 		"DATABASE_URL="+dbURL,
 		"IMAGE_STORAGE_DIR="+storage,
 		"LISTEN_ADDR=127.0.0.1:"+port,
