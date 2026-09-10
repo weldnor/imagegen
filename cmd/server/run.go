@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"net/http"
-	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"go.uber.org/fx"
 
 	"github.com/weldnor/imagegen/internal/auth"
 	"github.com/weldnor/imagegen/internal/config"
@@ -16,95 +18,64 @@ import (
 	"github.com/weldnor/imagegen/internal/gallery"
 	"github.com/weldnor/imagegen/internal/httpapi"
 	"github.com/weldnor/imagegen/internal/openrouter"
-	"github.com/weldnor/imagegen/migrations"
+	"github.com/weldnor/imagegen/internal/telegrambot"
 )
 
-// run loads configuration, connects to the database, applies migrations, wires
-// the stores and HTTP handlers, and serves until interrupted. When migrateOnly
-// is true it returns right after migrating.
-func run(migrateOnly bool) error {
-	cfg, err := config.Load(os.Getenv)
-	if err != nil {
-		return err
-	}
-
+// run assembles the app from every internal/* module via uber-fx and serves
+// (HTTP + the Telegram bot's polling loop) until interrupted.
+func run() error {
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := db.Connect(rootCtx, cfg.DatabaseURL)
-	if err != nil {
-		return err
-	}
-	defer pool.Close()
+	app := fx.New(
+		config.Module,
+		db.Module,
+		auth.Module,
+		gallery.Module,
+		openrouter.Module,
+		httpapi.Module,
+		telegrambot.Module,
+		fx.Invoke(registerHTTPServer),
+	)
 
-	if err := db.Migrate(rootCtx, pool, migrations.FS); err != nil {
-		return err
-	}
-	log.Printf("migrations applied")
-	if migrateOnly {
-		log.Printf("-migrate-only: done")
-		return nil
-	}
-
-	// Users: build the in-memory map and upsert a row per configured username.
-	users, err := auth.NewUsers(cfg.Users)
-	if err != nil {
-		return err
-	}
-	if err := users.SyncToDB(rootCtx, pool); err != nil {
+	if err := app.Start(rootCtx); err != nil {
 		return err
 	}
 
-	sessions := auth.NewSessionStore(pool, cfg.SessionTTL)
-	go sessions.StartPurgeLoop(rootCtx, 10*time.Minute)
+	<-rootCtx.Done()
+	log.Printf("shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return app.Stop(shutdownCtx)
+}
 
-	authSvc := auth.NewService(users, sessions, auth.Options{
-		CookieName:   cfg.SessionCookieName,
-		CookieSecure: cfg.SessionCookieSecure,
-		SessionTTL:   cfg.SessionTTL,
-	})
-
-	galleryStore := gallery.NewStore(pool, cfg.ImageStorageDir)
-
-	orClient := openrouter.New(openrouter.Config{
-		APIKey:  cfg.OpenRouterAPIKey,
-		BaseURL: cfg.OpenRouterBaseURL,
-		Timeout: cfg.OpenRouterTimeout,
-	})
-
-	apiHandlers := &httpapi.API{
-		Gen:         orClient,
-		Gallery:     galleryStore,
-		Concurrency: cfg.OpenRouterConcurrency,
-		MaxUpload:   cfg.MaxUploadBytes,
-	}
-	deps := httpapi.Deps{
-		Auth:   authSvc,
-		Static: httpapi.NewStaticHandler(cfg.StaticDir),
-	}
-	apiHandlers.Bind(&deps)
-
+// registerHTTPServer starts the HTTP server via fx.Lifecycle: it binds the
+// listener synchronously in OnStart (so a bad LISTEN_ADDR fails startup fast)
+// and serves in a goroutine; OnStop gracefully shuts it down.
+func registerHTTPServer(lc fx.Lifecycle, cfg *config.Config, handler http.Handler) error {
 	srv := &http.Server{
-		Addr:              cfg.ListenAddr,
-		Handler:           httpapi.NewRouter(deps),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	errCh := make(chan error, 1)
-	go func() {
-		log.Printf("listening on %s", cfg.ListenAddr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
-		}
-	}()
-
-	select {
-	case err := <-errCh:
+	ln, err := net.Listen("tcp", cfg.ListenAddr)
+	if err != nil {
 		return err
-	case <-rootCtx.Done():
-		log.Printf("shutting down")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		return srv.Shutdown(shutdownCtx)
 	}
+
+	lc.Append(fx.Hook{
+		OnStart: func(context.Context) error {
+			go func() {
+				log.Printf("listening on %s", cfg.ListenAddr)
+				if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					log.Printf("http server: %v", err)
+				}
+			}()
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			return srv.Shutdown(ctx)
+		},
+	})
+	return nil
 }

@@ -35,7 +35,8 @@ const (
 func EnvVarNames() []string {
 	return []string{
 		"OPENROUTER_API_KEY",
-		"AUTH_USERS",
+		"TELEGRAM_BOT_TOKEN",
+		"ADMIN_PASSWORD",
 		"DATABASE_URL",
 		"IMAGE_STORAGE_DIR",
 		"LISTEN_ADDR",
@@ -53,19 +54,14 @@ func EnvVarNames() []string {
 // RequiredEnvVarNames lists the environment variables Load rejects startup
 // without.
 func RequiredEnvVarNames() []string {
-	return []string{"OPENROUTER_API_KEY", "AUTH_USERS", "DATABASE_URL"}
-}
-
-// UserCred is one configured user: a username and a bcrypt password hash.
-type UserCred struct {
-	Username string
-	Hash     string
+	return []string{"OPENROUTER_API_KEY", "TELEGRAM_BOT_TOKEN", "ADMIN_PASSWORD", "DATABASE_URL"}
 }
 
 // Config holds the fully parsed and validated runtime configuration.
 type Config struct {
 	OpenRouterAPIKey string
-	Users            []UserCred
+	TelegramBotToken string
+	AdminPassword    string
 	DatabaseURL      string
 
 	ImageStorageDir     string
@@ -111,16 +107,14 @@ func Load(getenv func(string) string) (*Config, error) {
 		return nil, errors.New("DATABASE_URL is required but not set")
 	}
 
-	// --- required: AUTH_USERS ---
-	rawUsers := strings.TrimSpace(getenv("AUTH_USERS"))
-	if rawUsers == "" {
-		return nil, errors.New("AUTH_USERS is required but not set")
+	c.TelegramBotToken = strings.TrimSpace(getenv("TELEGRAM_BOT_TOKEN"))
+	if c.TelegramBotToken == "" {
+		return nil, errors.New("TELEGRAM_BOT_TOKEN is required but not set")
 	}
-	users, err := ParseUsers(rawUsers)
-	if err != nil {
-		return nil, fmt.Errorf("AUTH_USERS: %w", err)
+	c.AdminPassword = strings.TrimSpace(getenv("ADMIN_PASSWORD"))
+	if c.AdminPassword == "" {
+		return nil, errors.New("ADMIN_PASSWORD is required but not set")
 	}
-	c.Users = users
 
 	// --- optional overrides ---
 	if v := strings.TrimSpace(getenv("IMAGE_STORAGE_DIR")); v != "" {
@@ -193,58 +187,6 @@ func Load(getenv func(string) string) (*Config, error) {
 	}
 
 	return c, nil
-}
-
-// bcryptPrefixes are the hash identifiers golang.org/x/crypto/bcrypt emits and
-// accepts. A configured hash must start with one of them.
-var bcryptPrefixes = []string{"$2a$", "$2b$", "$2y$"}
-
-// ParseUsers parses an AUTH_USERS value of the form
-// "user1:bcrypt-hash,user2:bcrypt-hash" into a slice of UserCred. It rejects
-// empty entries, entries without a ":" separator, empty usernames, hashes that
-// are not bcrypt, and duplicate usernames.
-func ParseUsers(raw string) ([]UserCred, error) {
-	var users []UserCred
-	seen := map[string]bool{}
-	for _, entry := range strings.Split(raw, ",") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			return nil, errors.New("contains an empty entry")
-		}
-		idx := strings.Index(entry, ":")
-		if idx < 0 {
-			return nil, fmt.Errorf("entry %q is not a \"username:bcrypt-hash\" pair", entry)
-		}
-		username := strings.TrimSpace(entry[:idx])
-		hash := strings.TrimSpace(entry[idx+1:])
-		if username == "" {
-			return nil, fmt.Errorf("entry %q has an empty username", entry)
-		}
-		if hash == "" {
-			return nil, fmt.Errorf("user %q has an empty password hash", username)
-		}
-		if !hasAnyPrefix(hash, bcryptPrefixes) {
-			return nil, fmt.Errorf("user %q: password hash is not a bcrypt hash (must start with $2a$/$2b$/$2y$)", username)
-		}
-		if seen[username] {
-			return nil, fmt.Errorf("user %q is listed more than once", username)
-		}
-		seen[username] = true
-		users = append(users, UserCred{Username: username, Hash: hash})
-	}
-	if len(users) == 0 {
-		return nil, errors.New("yielded zero users")
-	}
-	return users, nil
-}
-
-func hasAnyPrefix(s string, prefixes []string) bool {
-	for _, p := range prefixes {
-		if strings.HasPrefix(s, p) {
-			return true
-		}
-	}
-	return false
 }
 
 // checkWritableDir returns an error if path does not exist, is not a directory,

@@ -34,17 +34,20 @@ func TestMigrateAppliesAndIsIdempotent(t *testing.T) {
 		t.Fatalf("first Migrate: %v", err)
 	}
 
-	// Schema objects from 0001_init exist.
+	// Schema objects from 0001_init and 0002_telegram exist.
 	for _, q := range []string{
 		`SELECT 1 FROM users LIMIT 0`,
 		`SELECT 1 FROM sessions LIMIT 0`,
 		`SELECT 1 FROM images LIMIT 0`,
+		`SELECT password_hash FROM users LIMIT 0`,
+		`SELECT 1 FROM user_telegram_ids LIMIT 0`,
+		`SELECT 1 FROM telegram_bindings LIMIT 0`,
 	} {
 		if _, err := pool.Exec(ctx, q); err != nil {
 			t.Fatalf("expected table to exist for %q: %v", q, err)
 		}
 	}
-	for _, idx := range []string{"sessions_expires_idx", "images_user_created_idx"} {
+	for _, idx := range []string{"sessions_expires_idx", "images_user_created_idx", "telegram_bindings_expires_idx"} {
 		var n int
 		if err := pool.QueryRow(ctx,
 			`SELECT count(*) FROM pg_indexes WHERE indexname = $1`, idx).Scan(&n); err != nil {
@@ -63,7 +66,7 @@ func TestMigrateAppliesAndIsIdempotent(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 {
-		t.Errorf("schema_migrations has %d rows after two runs, want 1", count)
+	if count != 2 {
+		t.Errorf("schema_migrations has %d rows after two runs, want 2", count)
 	}
 }

@@ -18,7 +18,7 @@ type Service struct {
 	cookieName   string
 	cookieSecure bool
 	ttl          time.Duration
-	limiter      *loginLimiter
+	limiter      *RateLimiter
 }
 
 // Options configure a Service.
@@ -49,7 +49,7 @@ func NewService(users *Users, sessions *SessionStore, opt Options) *Service {
 		cookieName:   opt.CookieName,
 		cookieSecure: opt.CookieSecure,
 		ttl:          opt.SessionTTL,
-		limiter:      newLoginLimiter(maxFail, win),
+		limiter:      NewRateLimiter(maxFail, win),
 	}
 }
 
@@ -93,18 +93,22 @@ func (svc *Service) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	key := clientIP(r) + "\x00" + req.Username
-	if !svc.limiter.allowed(key) {
+	if !svc.limiter.Allowed(key) {
 		writeError(w, http.StatusTooManyRequests, "too many failed login attempts; try again later")
 		return
 	}
 
-	userID, ok := svc.Users.Verify(req.Username, req.Password)
+	userID, ok, err := svc.Users.VerifyPassword(r.Context(), req.Username, req.Password)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not verify credentials")
+		return
+	}
 	if !ok {
-		svc.limiter.recordFailure(key)
+		svc.limiter.RecordFailure(key)
 		writeError(w, http.StatusUnauthorized, genericLoginError)
 		return
 	}
-	svc.limiter.reset(key)
+	svc.limiter.Reset(key)
 
 	sess, err := svc.Sessions.Create(r.Context(), userID)
 	if err != nil {

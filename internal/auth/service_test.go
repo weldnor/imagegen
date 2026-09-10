@@ -11,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/weldnor/imagegen/internal/config"
 	"github.com/weldnor/imagegen/internal/db"
 	"github.com/weldnor/imagegen/internal/dbtest"
 	"github.com/weldnor/imagegen/migrations"
@@ -27,14 +26,13 @@ func setup(t *testing.T, ttl time.Duration) (*Service, *pgxpool.Pool, map[string
 	if err := db.Migrate(ctx, pool, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	users, err := NewUsers([]config.UserCred{
-		{Username: "alice", Hash: aliceHash},
-		{Username: "bob", Hash: bobHash},
-	})
+	users := NewUsers(pool)
+	aliceID, err := users.CreateUser(ctx, "alice", alicePass, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := users.SyncToDB(ctx, pool); err != nil {
+	bobID, err := users.CreateUser(ctx, "bob", bobPass, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
 	svc := NewService(users, NewSessionStore(pool, ttl), Options{
@@ -42,10 +40,7 @@ func setup(t *testing.T, ttl time.Duration) (*Service, *pgxpool.Pool, map[string
 		CookieSecure: true,
 		SessionTTL:   ttl,
 	})
-	ids := map[string]string{
-		"alice": users.byName["alice"].UserID,
-		"bob":   users.byName["bob"].UserID,
-	}
+	ids := map[string]string{"alice": aliceID, "bob": bobID}
 	return svc, pool, ids
 }
 

@@ -9,10 +9,6 @@ import (
 	"time"
 )
 
-// sampleHash is a valid bcrypt hash (password "alice-password"). Used so tests
-// exercise the real bcrypt-prefix validation.
-const sampleHash = "$2a$10$OC8R4yTGCzRvlH3ru9mkIeqKQm5tgfye83af3fzimrUQWBB3lwVgu"
-
 // envStub returns a getenv function backed by m, recording which keys were
 // asked for.
 func envStub(m map[string]string) (func(string) string, *[]string) {
@@ -27,7 +23,8 @@ func envStub(m map[string]string) (func(string) string, *[]string) {
 func minimalEnv(storageDir string) map[string]string {
 	return map[string]string{
 		"OPENROUTER_API_KEY": "sk-or-test",
-		"AUTH_USERS":         "alice:" + sampleHash,
+		"TELEGRAM_BOT_TOKEN": "123456:test-token",
+		"ADMIN_PASSWORD":     "let-me-in",
 		"DATABASE_URL":       "postgres://localhost/imagen",
 		"IMAGE_STORAGE_DIR":  storageDir,
 	}
@@ -69,8 +66,11 @@ func TestLoadDefaults(t *testing.T) {
 	if c.StaticDir != "" {
 		t.Errorf("StaticDir = %q, want empty (embedded)", c.StaticDir)
 	}
-	if len(c.Users) != 1 || c.Users[0].Username != "alice" || c.Users[0].Hash != sampleHash {
-		t.Errorf("Users = %+v, want one alice with the sample hash", c.Users)
+	if c.TelegramBotToken != "123456:test-token" {
+		t.Errorf("TelegramBotToken = %q", c.TelegramBotToken)
+	}
+	if c.AdminPassword != "let-me-in" {
+		t.Errorf("AdminPassword = %q", c.AdminPassword)
 	}
 }
 
@@ -141,13 +141,11 @@ func TestLoadFailFast(t *testing.T) {
 	}{
 		{"missing OPENROUTER_API_KEY", func(m map[string]string) { delete(m, "OPENROUTER_API_KEY") }, "OPENROUTER_API_KEY"},
 		{"empty OPENROUTER_API_KEY", func(m map[string]string) { m["OPENROUTER_API_KEY"] = "   " }, "OPENROUTER_API_KEY"},
-		{"missing AUTH_USERS", func(m map[string]string) { delete(m, "AUTH_USERS") }, "AUTH_USERS"},
+		{"missing TELEGRAM_BOT_TOKEN", func(m map[string]string) { delete(m, "TELEGRAM_BOT_TOKEN") }, "TELEGRAM_BOT_TOKEN"},
+		{"empty TELEGRAM_BOT_TOKEN", func(m map[string]string) { m["TELEGRAM_BOT_TOKEN"] = "  " }, "TELEGRAM_BOT_TOKEN"},
+		{"missing ADMIN_PASSWORD", func(m map[string]string) { delete(m, "ADMIN_PASSWORD") }, "ADMIN_PASSWORD"},
+		{"empty ADMIN_PASSWORD", func(m map[string]string) { m["ADMIN_PASSWORD"] = "  " }, "ADMIN_PASSWORD"},
 		{"missing DATABASE_URL", func(m map[string]string) { delete(m, "DATABASE_URL") }, "DATABASE_URL"},
-		{"malformed AUTH_USERS entry (no colon)", func(m map[string]string) { m["AUTH_USERS"] = "aliceonly" }, "AUTH_USERS"},
-		{"AUTH_USERS non-bcrypt hash", func(m map[string]string) { m["AUTH_USERS"] = "alice:plaintext" }, "bcrypt"},
-		{"AUTH_USERS empty username", func(m map[string]string) { m["AUTH_USERS"] = ":" + sampleHash }, "empty username"},
-		{"AUTH_USERS duplicate user", func(m map[string]string) { m["AUTH_USERS"] = "alice:" + sampleHash + ",alice:" + sampleHash }, "more than once"},
-		{"AUTH_USERS only commas", func(m map[string]string) { m["AUTH_USERS"] = ",," }, "empty entry"},
 		{"bad SESSION_TTL", func(m map[string]string) { m["SESSION_TTL"] = "nope" }, "SESSION_TTL"},
 		{"bad SESSION_COOKIE_SECURE", func(m map[string]string) { m["SESSION_COOKIE_SECURE"] = "yes-please" }, "SESSION_COOKIE_SECURE"},
 		{"bad MAX_UPLOAD_BYTES", func(m map[string]string) { m["MAX_UPLOAD_BYTES"] = "lots" }, "MAX_UPLOAD_BYTES"},
